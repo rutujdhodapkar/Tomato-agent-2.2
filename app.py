@@ -19,7 +19,9 @@ MODEL_NAME = "nvidia/nemotron-nano-12b-v2-vl:free"
 VISION_MODEL = "nvidia/nemotron-nano-12b-v2-vl:free"
 REASONING_MODEL = "openai/gpt-oss-120b:free"
 FALLBACK_MODELS = [
-    "openai/gpt-oss-120b:free"
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "google/gemini-2.0-flash-exp:free",
+    "google/gemini-flash-1.5-8b:free"
 ]
 FARM_CONTEXT_FILE = "farm_context.json"
 USER_DB = "users.json"
@@ -138,14 +140,23 @@ def call_openrouter(messages, model=REASONING_MODEL):
     }
 
     last_error = ""
-    for current_model in models_to_try:
+    retry_delay = 2 # Start with 2s delay for 429s
+
+    for i, current_model in enumerate(models_to_try):
         payload = {"model": current_model, "messages": messages}
         try:
             response = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=60)
             
-            # If 404 or 429, try next model
-            if response.status_code in [404, 429]:
-                last_error = f"Model {current_model} failed with {response.status_code}"
+            # If 429 (Rate Limit), wait and try next or retry
+            if response.status_code == 429:
+                last_error = f"Model {current_model} rate limited (429). Waiting {retry_delay}s..."
+                time.sleep(retry_delay)
+                retry_delay *= 2 # Exponential backoff
+                continue
+
+            # If 404, try next model
+            if response.status_code == 404:
+                last_error = f"Model {current_model} failed with 404. Trying fallback..."
                 continue
                 
             if response.status_code != 200:
@@ -158,7 +169,16 @@ def call_openrouter(messages, model=REASONING_MODEL):
 
             data = response.json()
             if "choices" in data:
-                return data["choices"][0]["message"]["content"]
+                content = data["choices"][0]["message"]["content"]
+                
+                # Check for textual refusals inside a successful 200 response
+                refusal_keywords = ["i am sorry", "i'm sorry", "i cannot provide", "i can't provide", "i am an ai", "as an ai model"]
+                if any(kw in content.lower() for kw in refusal_keywords):
+                    last_error = f"Model {current_model} refused: {content[:100]}..."
+                    continue
+                
+                return content
+
             if "error" in data:
                 last_error = f"API Error ({current_model}): {data['error'].get('message')}"
                 continue
@@ -195,7 +215,7 @@ def _fetch_submodel_data(prompt, label, location):
     response = call_openrouter([{"role": "user", "content": prompt}])
     
     # 🔥 Check if response is an error message from call_openrouter
-    if any(err_sig in response for err_sig in ["HTTP Error", "API Error", "Network Error", "Unexpected format"]):
+    if any(err_sig in response for err_sig in ["HTTP Error", "API Error", "Network Error", "Unexpected format", "refused"]):
         return None, response
 
     try:
@@ -207,7 +227,7 @@ def _fetch_submodel_data(prompt, label, location):
         elif "```" in clean_json:
             clean_json = clean_json.split("```")[1].split("```")[0].strip()
             
-        # 2. Try regex if it still doesn't look like JSON
+        # 2. Try regex to find the JSON block (Look for the first '{' and corresponding last '}')
         if not (clean_json.startswith("{") or clean_json.startswith("[")):
             match = re.search(r'(\{.*\}|\[.*\])', clean_json, re.DOTALL)
             if match:
@@ -217,7 +237,7 @@ def _fetch_submodel_data(prompt, label, location):
         
         # Validation: Check if it's just a placeholder failure
         summary_text = str(data).lower()
-        if "unavailable" in summary_text or "could not fetch" in summary_text:
+        if any(kw in summary_text for kw in ["unavailable", "could not fetch"]):
             return None, "Data quality insufficient (placeholder returned)"
             
         return data, None
@@ -418,6 +438,66 @@ def run_reasoning_model(image_bytes, location, weather=None, climate=None, soil=
         return {"error": f"Reasoning model failed to parse output: {str(e)}", "raw_content": output_text if 'output_text' in locals() else str(result)}
 
 
+def run_soil_intelligence_model(location, weather=None, soil=None):
+    """
+    Synthesizes soil and weather data to provide improvement insights.
+    """
+    prompt = f"""
+    Analyze the following environmental context for {location} to provide SOIL IMPROVEMENT and FERTILIZER advice.
+    Weather/Climate Trends: {json.dumps(weather)}
+    Current Soil Health: {json.dumps(soil)}
+
+    Role: Expert Agricultural Soil Scientist.
+
+    Objective:
+    1. Analyze current soil deficiencies based on N-P-K, pH, and weather conditions.
+    2. Provide detailed actions to make the soil "more better" and productive.
+    3. Recommend specific fertilizers and biological inputs for maximum output.
+    4. Consider weather timing (e.g., nitrogen application relative to rain).
+
+    Return ONLY valid JSON in this structure:
+    {{
+        "soil_status": "Brief summary of soil health",
+        "deficiencies": ["List of main issues"],
+        "improvement_actions": ["Detailed step-by-step actions"],
+        "fertilizer_recommendations": [
+            {{"name": "...", "reason": "...", "cost": "...", "timing": "Best time to apply"}}
+        ],
+        "weather_impact": "How current weather affects soil management",
+        "yield_forecast": "Potential output improvement estimate"
+    }}
+    """
+
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "model": REASONING_MODEL,
+        "messages": [
+            {"role": "user", "content": prompt}
+        ]
+    }
+
+    try:
+        response = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=60)
+        output_text = response.json()["choices"][0]["message"]["content"].strip()
+        
+        # Robust extraction
+        if "```json" in output_text:
+            output_text = output_text.split("```json")[1].split("```")[0].strip()
+        elif "```" in output_text:
+            output_text = output_text.split("```")[1].split("```")[0].strip()
+        if not (output_text.startswith("{") or output_text.startswith("[")):
+            match = re.search(r'(\{.*\}|\[.*\])', output_text, re.DOTALL)
+            if match: output_text = match.group(0)
+
+        return json.loads(output_text)
+    except Exception as e:
+        return {"error": f"Soil Intelligence model failed: {str(e)}", "raw": output_text if 'output_text' in locals() else "Unknown"}
+
+
 def ensure_session_defaults():
     defaults = {
         "language": "English",
@@ -432,6 +512,14 @@ def ensure_session_defaults():
         "last_irrigation": None,
         "last_market": None,
         "last_pest_risk": None,
+        "analysis_mode": "Disease Detection",
+        "manual_n": "Medium", # Low/Medium/High
+        "manual_p": "Medium",
+        "manual_k": "Medium",
+        "manual_ph": "6.5",
+        "manual_moisture": "20.0",
+        "manual_rainfall": "0.0",
+        "soil_analysis_result": None
     }
     
     # Load persistent context
@@ -528,6 +616,13 @@ def sidebar_controls(lang_text):
     with st.sidebar:
         st.title("🤖 Agent Control Panel")
 
+        # 1. Mode Selection
+        st.session_state.analysis_mode = st.radio(
+            "Select Purpose",
+            ["Disease Detection", "Soil Intelligence"],
+            index=0 if st.session_state.analysis_mode == "Disease Detection" else 1
+        )
+        st.markdown("---")
         # Language selection with Apply button
         current_lang_idx = list(TRANSLATIONS.keys()).index(st.session_state.language)
         new_lang = st.selectbox("Select Language", list(TRANSLATIONS.keys()), index=current_lang_idx)
@@ -578,73 +673,75 @@ def home_page(lang_text):
         st.warning("📍 Location unavailable. Please enter manually.")
         st.session_state.location = st.text_input("Enter farm location", value="")
 
-    # ---------- ANALYZE LOGIC ----------
-    uploaded_image = st.file_uploader(lang_text["upload"], type=["jpg", "jpeg", "png"], label_visibility="collapsed")
+    # ---------- ANALYSIS LOGIC ----------
+    if st.session_state.analysis_mode == "Disease Detection":
+        st.markdown("### 📸 Disease Diagnosis")
+        uploaded_image = st.file_uploader(lang_text["upload"], type=["jpg", "jpeg", "png"], label_visibility="collapsed")
 
-    if uploaded_image:
-        image = Image.open(uploaded_image)
-        st.image(image, caption="Uploaded Leaf", use_container_width=True)
-        
-        if st.button(lang_text["analyze"]):
-            buffer = io.BytesIO()
-            image.save(buffer, format="JPEG")
-            img_bytes = buffer.getvalue()
+        if uploaded_image:
+            image = Image.open(uploaded_image)
+            st.image(image, caption="Uploaded Leaf", use_container_width=True)
             
-            status_container = st.empty()
-            with status_container.container():
-                st.markdown("### 🔁 Running full farm intelligence pipeline...")
+            if st.button(lang_text["analyze"]):
+                buffer = io.BytesIO()
+                image.save(buffer, format="JPEG")
+                img_bytes = buffer.getvalue()
                 
-                # Use the Orchestrator (Main Model) for sub-models
-                reports = agricultural_intelligence_orchestrator(
-                    st.session_state.location, 
-                    lambda msg: st.write(msg)
-                )
-                
-                st.session_state.last_weather = reports["weather"]
-                st.session_state.last_climate = reports["climate"]
-                st.session_state.last_soil = reports["soil"]
-                st.session_state.last_irrigation = reports["irrigation"]
-                st.session_state.last_market = reports["market"]
-                st.session_state.last_pest_risk = reports["pest_risk"]
-                
-                st.write("• Analyzing image & synthesizing all reports…")
-                
-                # RETRY LOOP for Tomato Detection
-                final_result = None
-                for attempt in range(3):
-                    if attempt > 0:
-                        st.write(f"• Retrying tomato verification (Attempt {attempt+1}/3)…")
+                status_container = st.empty()
+                with status_container.container():
+                    st.markdown("### 🔁 Running full farm intelligence pipeline...")
                     
-                    result = run_reasoning_model(
-                        img_bytes, 
-                        st.session_state.location,
-                        weather=st.session_state.last_weather,
-                        climate=st.session_state.last_climate,
-                        soil=st.session_state.last_soil,
-                        irrigation=st.session_state.last_irrigation,
-                        market=st.session_state.last_market,
-                        pest_risk=st.session_state.last_pest_risk,
-                        retry_count=attempt
+                    # Use the Orchestrator (Main Model) for sub-models
+                    reports = agricultural_intelligence_orchestrator(
+                        st.session_state.location, 
+                        lambda msg: st.write(msg)
                     )
                     
-                    if "error" in result:
-                        final_result = result
-                        break
+                    st.session_state.last_weather = reports["weather"]
+                    st.session_state.last_climate = reports["climate"]
+                    st.session_state.last_soil = reports["soil"]
+                    st.session_state.last_irrigation = reports["irrigation"]
+                    st.session_state.last_market = reports["market"]
+                    st.session_state.last_pest_risk = reports["pest_risk"]
                     
-                    if result.get("crop_name") == "Tomato":
-                        final_result = result
-                        # Save to context
-                        st.session_state.detected_disease = result.get("disease_name")
-                        st.session_state.detected_crop = "Tomato"
-                        save_farm_context({
-                            "location": st.session_state.location,
-                            "disease_name": st.session_state.detected_disease,
-                            "crop_name": st.session_state.detected_crop
-                        })
-                        break
-                    else:
-                        final_result = result # Keep the 'Not Tomato' result if last attempt
-                        time.sleep(1)
+                    st.write("• Analyzing image & synthesizing all reports…")
+                    
+                    # RETRY LOOP for Tomato Detection
+                    final_result = None
+                    for attempt in range(3):
+                        if attempt > 0:
+                            st.write(f"• Retrying tomato verification (Attempt {attempt+1}/3)…")
+                        
+                        result = run_reasoning_model(
+                            img_bytes, 
+                            st.session_state.location,
+                            weather=st.session_state.last_weather,
+                            climate=st.session_state.last_climate,
+                            soil=st.session_state.last_soil,
+                            irrigation=st.session_state.last_irrigation,
+                            market=st.session_state.last_market,
+                            pest_risk=st.session_state.last_pest_risk,
+                            retry_count=attempt
+                        )
+                    
+                        if "error" in result:
+                            final_result = result
+                            break
+                        
+                        if result.get("crop_name") == "Tomato":
+                            final_result = result
+                            # Save to context
+                            st.session_state.detected_disease = result.get("disease_name")
+                            st.session_state.detected_crop = "Tomato"
+                            save_farm_context({
+                                "location": st.session_state.location,
+                                "disease_name": st.session_state.detected_disease,
+                                "crop_name": st.session_state.detected_crop
+                            })
+                            break
+                        else:
+                            final_result = result # Keep the 'Not Tomato' result if last attempt
+                            time.sleep(1)
                 
                 status_container.empty()
                 st.session_state.detection_result = final_result
@@ -657,6 +754,97 @@ def home_page(lang_text):
                 st.rerun()
             else:
                 st.error(final_result.get("error", "Unknown Error") if final_result else "No result.")
+
+    else: # Soil Intelligence Mode
+        st.markdown("### 🧪 Soil Health & Optimization")
+        st.write("Get professional insights on how to improve your soil based on location data or manual reports.")
+        
+        # --- Relocated Manual Entry ---
+        with st.expander("📝 Manual Report Input (Override AI)") :
+            col1, col2 = st.columns(2)
+            with col1:
+                st.session_state.manual_n = st.selectbox("Nitrogen (N)", ["Low", "Medium", "High"], index=["Low", "Medium", "High"].index(st.session_state.manual_n))
+                st.session_state.manual_p = st.selectbox("Phosphorus (P)", ["Low", "Medium", "High"], index=["Low", "Medium", "High"].index(st.session_state.manual_p))
+                st.session_state.manual_k = st.selectbox("Potassium (K)", ["Low", "Medium", "High"], index=["Low", "Medium", "High"].index(st.session_state.manual_k))
+            with col2:
+                st.session_state.manual_ph = st.text_input("Soil pH", value=st.session_state.manual_ph)
+                st.session_state.manual_moisture = st.text_input("Moisture %", value=st.session_state.manual_moisture)
+                st.session_state.manual_rainfall = st.text_input("Rainfall (mm)", value=st.session_state.manual_rainfall)
+            
+            if st.button("📥 Apply Manual Override"):
+                st.session_state.last_soil = {
+                    "summary": "Manually entered soil data.",
+                    "table_data": [
+                        {"Metric": "Nitrogen", "Value": st.session_state.manual_n},
+                        {"Metric": "Phosphorus", "Value": st.session_state.manual_p},
+                        {"Metric": "Potassium", "Value": st.session_state.manual_k},
+                        {"Metric": "pH", "Value": st.session_state.manual_ph}
+                    ]
+                }
+                st.session_state.last_climate = {
+                    "summary": "Manually entered climate data.",
+                    "table_data": [
+                        {"Metric": "Soil Moisture", "Value": f"{st.session_state.manual_moisture}%"},
+                        {"Metric": "Rainfall", "Value": f"{st.session_state.manual_rainfall}mm"}
+                    ]
+                }
+                st.success("Manual data applied! You can now run Soil AI Analysis.")
+
+        if st.button("🚀 Run Soil AI Analysis"):
+            status_container = st.empty()
+            with status_container.container():
+                # 1. Fetch data if missing
+                if not st.session_state.last_soil:
+                    st.write("• Fetching regional reports...")
+                    reports = agricultural_intelligence_orchestrator(st.session_state.location, lambda msg: st.write(msg))
+                    st.session_state.last_weather = reports["weather"]
+                    st.session_state.last_climate = reports["climate"]
+                    st.session_state.last_soil = reports["soil"]
+                
+                st.write("• Synchronizing data with Soil Intelligence Model...")
+                res = run_soil_intelligence_model(
+                    st.session_state.location,
+                    weather=st.session_state.last_weather,
+                    soil=st.session_state.last_soil
+                )
+                st.session_state.soil_analysis_result = res
+                status_container.empty()
+                st.rerun()
+
+        if st.session_state.soil_analysis_result:
+            res = st.session_state.soil_analysis_result
+            if "error" in res:
+                st.error(res["error"])
+            else:
+                st.success("Soil Intelligence Report Ready!")
+                st.markdown(f"## 🌾 {res.get('soil_status')}")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown("#### ❌ Deficiencies Found")
+                    for d in res.get("deficiencies", []):
+                        st.write(f"• {d}")
+                    
+                    st.markdown("#### 🛠️ Improvement Actions")
+                    for a in res.get("improvement_actions", []):
+                        st.info(a)
+
+                with col2:
+                    st.markdown("#### 🧪 Fertilizer Advice")
+                    for f in res.get("fertilizer_recommendations", []):
+                        st.markdown(f"""
+                        <div class="fert-card">
+                            <div class="fert-title">🔬 {f.get('name')}</div>
+                            <div class="fert-reason"><b>Timing:</b> {f.get('timing')}</div>
+                            <div class="fert-reason"><b>Why:</b> {f.get('reason')}</div>
+                            <div class="fert-cost">💰 Cost Est: {f.get('cost')}</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    
+                    st.warning(f"**⚡ Weather Impact:** {res.get('weather_impact')}")
+                    st.metric("Estimated Yield Increase", res.get("yield_forecast", "N/A"))
+
+                st.markdown("---")
 
     # ---------- RESULT DISPLAY (Above Uploader) ----------
     if st.session_state.detection_result and "error" not in st.session_state.detection_result:
@@ -845,6 +1033,17 @@ def main():
 
     st.markdown('<div id="main-content">', unsafe_allow_html=True)
     sidebar_controls(lang_text)
+    
+    # Mode switch reset logic
+    if "prev_mode" not in st.session_state:
+        st.session_state.prev_mode = st.session_state.analysis_mode
+    
+    if st.session_state.analysis_mode != st.session_state.prev_mode:
+        st.session_state.detection_result = None
+        st.session_state.soil_analysis_result = None
+        st.session_state.prev_mode = st.session_state.analysis_mode
+        st.rerun()
+
     apply_local_font(st.session_state.language)
 
     menu = st.session_state.menu_choice
