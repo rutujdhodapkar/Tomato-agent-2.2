@@ -1,9 +1,7 @@
 streamlit
-requests
+tensorflow
+numpy
 pillow
-streamlit-folium
-folium
-geopy
-matplotlib
-pandas
+requests
+geocoder
 python-dateutil
