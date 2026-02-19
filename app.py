@@ -17,11 +17,9 @@ OPENROUTER_API_KEY = "sk-or-v1-0f8639434b5813861c40a6ed1a6dfd856f29341d33d84d813
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 MODEL_NAME = "nvidia/nemotron-nano-12b-v2-vl:free"
 VISION_MODEL = "nvidia/nemotron-nano-12b-v2-vl:free"
-REASONING_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
+REASONING_MODEL = "openai/gpt-oss-120b:free"
 FALLBACK_MODELS = [
-    "google/gemini-2.0-flash-exp:free",
-    "google/gemini-flash-1.5-8b:free",
-    "meta-llama/llama-3.1-8b-instruct:free"
+    "openai/gpt-oss-120b:free"
 ]
 FARM_CONTEXT_FILE = "farm_context.json"
 USER_DB = "users.json"
@@ -475,6 +473,38 @@ def apply_local_font(language):
             #main-content {{
                 padding-top: 50px !important;
             }}
+            
+            @import url('https://fonts.googleapis.com/css2?family={font_family.replace(" ", "+")}&display=swap');
+            
+            html, body, [data-testid="stAppViewContainer"] {{
+                font-family: '{font_family}', sans-serif !important;
+            }}
+            
+            /* Fertilizer Card Styling */
+            .fert-card {{
+                background-color: #f0f7f4;
+                border-left: 5px solid #2e7d32;
+                padding: 15px;
+                border-radius: 10px;
+                margin-bottom: 15px;
+                box-shadow: 2px 2px 5px rgba(0,0,0,0.05);
+            }}
+            .fert-title {{
+                color: #1b5e20;
+                font-weight: bold;
+                font-size: 1.1em;
+                margin-bottom: 5px;
+            }}
+            .fert-cost {{
+                color: #d32f2f;
+                font-weight: bold;
+                font-size: 0.9em;
+            }}
+            .fert-reason {{
+                color: #455a64;
+                font-size: 0.95em;
+                margin-top: 5px;
+            }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -646,14 +676,22 @@ def home_page(lang_text):
             st.error(f"**🔴 NEXT 3 MONTHS**\n\n{res.get('plan_3_months', 'N/A')}")
 
             st.markdown("---")
-            st.markdown("### 🧪 Recommended Fertilizers & Costs")
+            st.markdown("### 🧪 Recommended Fertilizers & Solutions")
             ferts = res.get("fertilizers", [])
             search_terms = []
             if ferts:
+                # Render as Visual Cards
                 for f in ferts:
-                    st.write(f"• **{f.get('name')}**: {f.get('reason')} (Est: {f.get('cost')})")
+                    st.markdown(f"""
+                    <div class="fert-card">
+                        <div class="fert-title">🔬 {f.get('name')}</div>
+                        <div class="fert-reason"><b>Usage:</b> {f.get('reason')}</div>
+                        <div class="fert-cost">💰 Estimated Cost: {f.get('cost')}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
                     search_terms.append(f"{f.get('name')} price")
                 
+                st.write("") # Spacer
                 if st.button("🛒 Shop Recommended Fertilizers Online"):
                     st.session_state.pending_shop_query = " + ".join(search_terms)
                     st.session_state.menu_choice = lang_text["shops"]
@@ -762,7 +800,8 @@ def shop_or_doctors_page(title, actor, lang_text):
                 else:
                     search_prompt = f"As an agricultural AI, find/recommend 5 plant doctors or experts for {crop}{disease_context} with requirement: {requirement} near {location}. Provide name, contact detail (simulated), and specialized service. Format as a clean list."
                 
-                response = call_openrouter([{"role": "user", "content": search_prompt}])
+                # Use GPT for high-accuracy shop/doctor searches
+                response = call_openrouter([{"role": "user", "content": search_prompt}], model="openai/gpt-4o-mini")
                 if "error" not in response.lower() or "401" not in response:
                     st.success(f"Found {actor}s!")
                     st.markdown(response)
