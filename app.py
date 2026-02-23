@@ -10,9 +10,12 @@ import requests
 import streamlit as st
 from PIL import Image
 from streamlit_js_eval import streamlit_js_eval
+from sarvamai import SarvamAI
 
 # ================= CONFIG ================= #
-# API key intentionally kept in-code per requirement.
+# API keys intentionally kept in-code per requirement.
+SARVAM_API_KEY = "sk_1x6902nv_YD6iYU66jylp0rxDeynkuu6o"
+sarvam_client = SarvamAI(api_subscription_key=SARVAM_API_KEY)
 OPENROUTER_API_KEY = "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"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 MODEL_NAME = "nvidia/nemotron-nano-12b-v2-vl:free"
@@ -30,55 +33,105 @@ REPORTS_DIR = "reports"
 os.makedirs(REPORTS_DIR, exist_ok=True)
 
 # ================= LANGUAGE / FONT ================= #
-TRANSLATIONS = {
-    "English": {
-        "home": "Home",
-        "chat": "Chat",
-        "shops": "Shop",
-        "doctors": "Doctors",
-        "contact": "Contact",
-        "username": "Username",
-        "password": "Password",
-        "upload": "Upload Leaf Image",
-        "analyze": "Analyze",
-        "btn_desc": "📄 Disease Description",
-        "btn_sol": "💡 Get Solution",
-        "btn_fert": "🧪 Get Fertilizers",
-    },
-    "Hindi": {
-        "home": "होम",
-        "chat": "चैट",
-        "shops": "दुकान",
-        "doctors": "डॉक्टर्स",
-        "contact": "संपर्क",
-        "username": "यूज़रनेम",
-        "password": "पासवर्ड",
-        "upload": "पत्ता अपलोड करें",
-        "analyze": "विश्लेषण",
-        "btn_desc": "📄 बीमारी का विवरण",
-        "btn_sol": "💡 समाधान प्राप्त करें",
-        "btn_fert": "🧪 उर्वरक प्राप्त करें",
-    },
-    "Marathi": {
-        "home": "मुख्यपृष्ठ",
-        "chat": "चॅट",
-        "shops": "दुकान",
-        "doctors": "डॉक्टर्स",
-        "contact": "संपर्क",
-        "username": "वापरकर्ता नाव",
-        "password": "पासवर्ड",
-        "upload": "पान अपलोड करा",
-        "analyze": "विश्लेषण",
-        "btn_desc": "📄 रोगाचे वर्णन",
-        "btn_sol": "💡 उपाय मिळवा",
-        "btn_fert": "🧪 खते मिळवा",
-    },
+SARVAM_LANG_MAP = {
+    "English": "en-IN",
+    "Hindi": "hi-IN",
+    "Marathi": "mr-IN",
+    "Assamese": "as-IN",
+    "Bengali": "bn-IN",
+    "Bodo": "brx-IN",
+    "Dogri": "doi-IN",
+    "Gujarati": "gu-IN",
+    "Kannada": "kn-IN",
+    "Kashmiri": "ks-IN",
+    "Konkani": "kok-IN",
+    "Maithili": "mai-IN",
+    "Malayalam": "ml-IN",
+    "Manipuri": "mni-IN",
+    "Nepali": "ne-IN",
+    "Odia": "or-IN",
+    "Punjabi": "pa-IN",
+    "Sanskrit": "sa-IN",
+    "Santali": "sat-IN",
+    "Sindhi": "sd-IN",
+    "Tamil": "ta-IN",
+    "Telugu": "te-IN",
+    "Urdu": "ur-IN"
 }
+
+TRANSLATION_CACHE_FILE = "translations_cache.json"
+
+def get_translation_cache():
+    if os.path.exists(TRANSLATION_CACHE_FILE):
+        try:
+            with open(TRANSLATION_CACHE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_translation_cache(cache):
+    try:
+        with open(TRANSLATION_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False, indent=2)
+    except:
+        pass
+
+def t(text):
+    """Translates text using Sarvam AI with caching."""
+    target_lang = st.session_state.get("language", "English")
+    if target_lang == "English":
+        return text
+        
+    target_code = SARVAM_LANG_MAP.get(target_lang, "en-IN")
+    cache = get_translation_cache()
+    
+    # Cache key: text:lang_code
+    cache_key = f"{text}:{target_code}"
+    if cache_key in cache:
+        return cache[cache_key]
+        
+    try:
+        response = sarvam_client.text.translate(
+            input=text,
+            source_language_code="en-IN",
+            target_language_code=target_code,
+            model="mayura:v1"
+        )
+        
+        # Sarvam AI response can be an object with .translated_text attribute
+        if hasattr(response, "translated_text"):
+            translated_text = response.translated_text
+        elif isinstance(response, dict):
+            translated_text = response.get("translated_text", text)
+        else:
+            translated_text = str(response) if response else text
+            
+        cache[cache_key] = translated_text
+        save_translation_cache(cache)
+        return translated_text
+    except Exception as e:
+        error_msg = f"Sarvam AI Translation Error: {e}"
+        print(error_msg)
+        st.session_state["last_translation_error"] = error_msg
+        return text
+
+# Font fallback for regional scripts
 FONT_MAP = {
     "English": "Arial, sans-serif",
     "Hindi": "'Nirmala UI', 'Mangal', sans-serif",
     "Marathi": "'Noto Sans Devanagari', 'Mangal', sans-serif",
+    "Bengali": "'Noto Sans Bengali', sans-serif",
+    "Telugu": "'Noto Sans Telugu', sans-serif",
+    "Tamil": "'Noto Sans Tamil', sans-serif",
+    "Gujarati": "'Noto Sans Gujarati', sans-serif",
+    "Kannada": "'Noto Sans Kannada', sans-serif",
+    "Malayalam": "'Noto Sans Malayalam', sans-serif",
+    "Punjabi": "'Noto Sans Gurmukhi', sans-serif",
 }
+def get_font():
+    lang = st.session_state.get("language", "English")
+    return FONT_MAP.get(lang, "sans-serif")
 
 
 
@@ -309,27 +362,27 @@ def agricultural_intelligence_orchestrator(location, status_callback):
         attempt = 0
         while reports[layer] is None and attempt < 10:
             attempt += 1
-            status_callback(f"• Fetching {layer.replace('_', ' ').title()} data (Attempt {attempt}/10)...")
+            status_callback(t(f"• Fetching {layer.replace('_', ' ').title()} data (Attempt {attempt}/10)..."))
             
             data, err = _fetch_submodel_data(prompts[layer], layer, location)
             if data:
                 reports[layer] = data
-                status_callback(f"✅ {layer.replace('_', ' ').title()} data secured.")
+                status_callback("✅ " + t(f"{layer.replace('_', ' ').title()} data secured."))
                 
                 # Save to reports dir
                 path = os.path.join(REPORTS_DIR, f"{layer}_{datetime.now().strftime('%Y%m%d')}.json")
                 with open(path, "w") as f:
                     json.dump(data, f)
             else:
-                status_callback(f"⚠️ {layer.replace('_', ' ').title()} fetch failed: {err}. Retrying...")
+                status_callback("⚠️ " + t(f"{layer.replace('_', ' ').title()} fetch failed") + f": {t(err)}. " + t("Retrying..."))
                 time.sleep(2) 
         
         # Fallback if max retries reached
         if reports[layer] is None:
-            status_callback(f"❌ Failed to secure {layer} data after 10 attempts. Using placeholder.")
+            status_callback("❌ " + t(f"Failed to secure {layer} data after 10 attempts. Using placeholder."))
             reports[layer] = {
-                "summary": f"Maximum retries reached for {layer}. Using historical averages.",
-                "table_data": [{"Metric": "Status", "Value": "Data Unavailable (Retry Limit)"}]
+                "summary": t(f"Maximum retries reached for {layer}. Using historical averages."),
+                "table_data": [{"Metric": t("Status"), "Value": t("Data Unavailable (Retry Limit)")}]
             }
     
     return reports
@@ -535,7 +588,7 @@ def ensure_session_defaults():
 
 
 def apply_local_font(language):
-    font_family = FONT_MAP.get(language, FONT_MAP["English"])
+    font_family = get_font()
     st.markdown(
         f"""
         <style>
@@ -612,35 +665,60 @@ def apply_local_font(language):
     st.markdown(f"<style>{icon_styles}</style>", unsafe_allow_html=True)
 
 
-def sidebar_controls(lang_text):
+def sidebar_controls():
     with st.sidebar:
-        st.title("🤖 Agent Control Panel")
+        st.title("🤖 " + t("Agent Control Panel"))
+
+        # Residue Advisor Link
+        st.link_button(t("Residue Advisor"), "https://agriintellect.streamlit.app/", use_container_width=True)
+        st.markdown("---")
 
         # 1. Mode Selection
-        st.session_state.analysis_mode = st.radio(
-            "Select Purpose",
-            ["Disease Detection", "Soil Intelligence"],
-            index=0 if st.session_state.analysis_mode == "Disease Detection" else 1
+        mode_options = {
+            "Disease Detection": t("Disease Detection"),
+            "Soil Intelligence": t("Soil Intelligence")
+        }
+        selected_mode_label = mode_options.get(st.session_state.analysis_mode, t("Disease Detection"))
+        
+        new_mode_label = st.radio(
+            t("Select Purpose"),
+            list(mode_options.values()),
+            index=list(mode_options.values()).index(selected_mode_label)
         )
+        
+        # Map label back to ID
+        for mode_id, label in mode_options.items():
+            if label == new_mode_label:
+                st.session_state.analysis_mode = mode_id
+                break
+
         st.markdown("---")
         # Language selection with Apply button
-        current_lang_idx = list(TRANSLATIONS.keys()).index(st.session_state.language)
-        new_lang = st.selectbox("Select Language", list(TRANSLATIONS.keys()), index=current_lang_idx)
+        lang_list = sorted(list(SARVAM_LANG_MAP.keys()))
+        current_lang_idx = lang_list.index(st.session_state.language)
+        new_lang = st.selectbox(t("Select Language"), lang_list, index=current_lang_idx)
         
-        if st.button("Apply Language"):
+        if st.button(t("Apply Language")):
             st.session_state.language = new_lang
             st.rerun()
 
+        if "last_translation_error" in st.session_state:
+            with st.expander("🛠️ Translation Debug Info"):
+                st.error(st.session_state.last_translation_error)
+                if st.button("Clear Error"):
+                    del st.session_state["last_translation_error"]
+                    st.rerun()
 
-def home_page(lang_text):
-    st.markdown("# 🌱 Welcome to Tomato Detection System!")
-    st.markdown("### Your ultimate companion for tomato planting, care, and disease management.")
-    st.markdown("""
+
+def home_page():
+    st.markdown("# 🌱 " + t("Welcome to Tomato Detection System!"))
+    st.markdown("### " + t("Your ultimate companion for tomato planting, care, and disease management."))
+    st.markdown(t("""
     **Use the Tomato System to:**
     - Detect and diagnose diseases in tomato plants.
     - Get expert advice and treatment options with Planty AI.
     - Shop for high-quality fertilizers, pesticides, and seeds.
-    """)
+    """))
     st.markdown("---")
 
     # ---------- LOCATION AUTO-FETCH ----------
@@ -670,26 +748,26 @@ def home_page(lang_text):
 
     # Show text box only if not fetched
     if not st.session_state.location:
-        st.warning("📍 Location unavailable. Please enter manually.")
-        st.session_state.location = st.text_input("Enter farm location", value="")
+        st.warning("📍 " + t("Location unavailable. Please enter manually."))
+        st.session_state.location = st.text_input(t("Enter farm location"), value="")
 
     # ---------- ANALYSIS LOGIC ----------
     if st.session_state.analysis_mode == "Disease Detection":
-        st.markdown("### 📸 Disease Diagnosis")
-        uploaded_image = st.file_uploader(lang_text["upload"], type=["jpg", "jpeg", "png"], label_visibility="collapsed")
-        final result = None
+        st.markdown("### 📸 " + t("Disease Diagnosis"))
+        uploaded_image = st.file_uploader(t("Upload Leaf Image"), type=["jpg", "jpeg", "png"], label_visibility="collapsed")
+        final_result = None
         if uploaded_image:
             image = Image.open(uploaded_image)
-            st.image(image, caption="Uploaded Leaf", use_container_width=True)
+            st.image(image, caption=t("Uploaded Leaf"), use_container_width=True)
             
-            if st.button(lang_text["analyze"]):
+            if st.button(t("Analyze")):
                 buffer = io.BytesIO()
                 image.save(buffer, format="JPEG")
                 img_bytes = buffer.getvalue()
                 
                 status_container = st.empty()
                 with status_container.container():
-                    st.markdown("### 🔁 Running full farm intelligence pipeline...")
+                    st.markdown("### 🔁 " + t("Running full farm intelligence pipeline..."))
                     
                     # Use the Orchestrator (Main Model) for sub-models
                     reports = agricultural_intelligence_orchestrator(
@@ -704,13 +782,13 @@ def home_page(lang_text):
                     st.session_state.last_market = reports["market"]
                     st.session_state.last_pest_risk = reports["pest_risk"]
                     
-                    st.write("• Analyzing image & synthesizing all reports…")
+                    st.write("• " + t(f"Analyzing image & synthesizing all reports…"))
                     
                     # RETRY LOOP for Tomato Detection
                     final_result = None
                     for attempt in range(3):
                         if attempt > 0:
-                            st.write(f"• Retrying tomato verification (Attempt {attempt+1}/3)…")
+                            st.write("• " + t(f"Retrying tomato verification (Attempt {attempt+1}/3)…"))
                         
                         result = run_reasoning_model(
                             img_bytes, 
@@ -748,30 +826,30 @@ def home_page(lang_text):
             
             if final_result and "error" not in final_result:
                 if final_result.get("crop_name") == "Tomato":
-                    st.success("Tomato Farm Intelligence Report Generated!")
+                    st.success(t("Tomato Farm Intelligence Report Generated!"))
                 else:
-                    st.warning("⚠️ High confidence that this is not a Tomato plant. No diagnosis provided.")
+                    st.warning("⚠️ " + t("High confidence that this is not a Tomato plant. No diagnosis provided."))
                 st.rerun()
             else:
-                st.error(final_result.get("error", "Unknown Error") if final_result else "No result.")
+                st.error(t(final_result.get("error", "Unknown Error") if final_result else "No result."))
 
     else: # Soil Intelligence Mode
-        st.markdown("### 🧪 Soil Health & Optimization")
-        st.write("Get professional insights on how to improve your soil based on location data or manual reports.")
+        st.markdown("### 🧪 " + t("Soil Health & Optimization"))
+        st.write(t("Get professional insights on how to improve your soil based on location data or manual reports."))
         
         # --- Relocated Manual Entry ---
-        with st.expander("📝 Manual Report Input (Override AI)") :
+        with st.expander("📝 " + t("Manual Report Input (Override AI)")) :
             col1, col2 = st.columns(2)
             with col1:
-                st.session_state.manual_n = st.selectbox("Nitrogen (N)", ["Low", "Medium", "High"], index=["Low", "Medium", "High"].index(st.session_state.manual_n))
-                st.session_state.manual_p = st.selectbox("Phosphorus (P)", ["Low", "Medium", "High"], index=["Low", "Medium", "High"].index(st.session_state.manual_p))
-                st.session_state.manual_k = st.selectbox("Potassium (K)", ["Low", "Medium", "High"], index=["Low", "Medium", "High"].index(st.session_state.manual_k))
+                st.session_state.manual_n = st.selectbox(t("Nitrogen (N)"), ["Low", "Medium", "High"], index=["Low", "Medium", "High"].index(st.session_state.manual_n))
+                st.session_state.manual_p = st.selectbox(t("Phosphorus (P)"), ["Low", "Medium", "High"], index=["Low", "Medium", "High"].index(st.session_state.manual_p))
+                st.session_state.manual_k = st.selectbox(t("Potassium (K)"), ["Low", "Medium", "High"], index=["Low", "Medium", "High"].index(st.session_state.manual_k))
             with col2:
-                st.session_state.manual_ph = st.text_input("Soil pH", value=st.session_state.manual_ph)
-                st.session_state.manual_moisture = st.text_input("Moisture %", value=st.session_state.manual_moisture)
-                st.session_state.manual_rainfall = st.text_input("Rainfall (mm)", value=st.session_state.manual_rainfall)
+                st.session_state.manual_ph = st.text_input(t("Soil pH"), value=st.session_state.manual_ph)
+                st.session_state.manual_moisture = st.text_input(t("Moisture %"), value=st.session_state.manual_moisture)
+                st.session_state.manual_rainfall = st.text_input(t("Rainfall (mm)"), value=st.session_state.manual_rainfall)
             
-            if st.button("📥 Apply Manual Override"):
+            if st.button("📥 " + t("Apply Manual Override")):
                 st.session_state.last_soil = {
                     "summary": "Manually entered soil data.",
                     "table_data": [
@@ -788,9 +866,9 @@ def home_page(lang_text):
                         {"Metric": "Rainfall", "Value": f"{st.session_state.manual_rainfall}mm"}
                     ]
                 }
-                st.success("Manual data applied! You can now run Soil AI Analysis.")
+                st.success(t("Manual data applied! You can now run Soil AI Analysis."))
 
-        if st.button("🚀 Run Soil AI Analysis"):
+        if st.button("🚀 " + t("Run Soil AI Analysis")):
             status_container = st.empty()
             with status_container.container():
                 # 1. Fetch data if missing
@@ -814,35 +892,35 @@ def home_page(lang_text):
         if st.session_state.soil_analysis_result:
             res = st.session_state.soil_analysis_result
             if "error" in res:
-                st.error(res["error"])
+                st.error(t(res["error"]))
             else:
-                st.success("Soil Intelligence Report Ready!")
-                st.markdown(f"## 🌾 {res.get('soil_status')}")
+                st.success(t("Soil Intelligence Report Ready!"))
+                st.markdown(f"## 🌾 {t(res.get('soil_status'))}")
                 
                 col1, col2 = st.columns(2)
                 with col1:
-                    st.markdown("#### ❌ Deficiencies Found")
+                    st.markdown("#### ❌ " + t("Deficiencies Found"))
                     for d in res.get("deficiencies", []):
-                        st.write(f"• {d}")
+                        st.write(f"• {t(d)}")
                     
-                    st.markdown("#### 🛠️ Improvement Actions")
+                    st.markdown("#### 🛠️ " + t("Improvement Actions"))
                     for a in res.get("improvement_actions", []):
-                        st.info(a)
+                        st.info(t(a))
 
                 with col2:
-                    st.markdown("#### 🧪 Fertilizer Advice")
+                    st.markdown("#### 🧪 " + t("Fertilizer Advice"))
                     for f in res.get("fertilizer_recommendations", []):
                         st.markdown(f"""
                         <div class="fert-card">
-                            <div class="fert-title">🔬 {f.get('name')}</div>
-                            <div class="fert-reason"><b>Timing:</b> {f.get('timing')}</div>
-                            <div class="fert-reason"><b>Why:</b> {f.get('reason')}</div>
-                            <div class="fert-cost">💰 Cost Est: {f.get('cost')}</div>
+                            <div class="fert-title">🔬 {t(f.get('name'))}</div>
+                            <div class="fert-reason"><b>{t('Timing')}:</b> {t(f.get('timing'))}</div>
+                            <div class="fert-reason"><b>{t('Why')}:</b> {t(f.get('reason'))}</div>
+                            <div class="fert-cost">💰 {t('Cost Est')}: {t(f.get('cost'))}</div>
                         </div>
                         """, unsafe_allow_html=True)
                     
-                    st.warning(f"**⚡ Weather Impact:** {res.get('weather_impact')}")
-                    st.metric("Estimated Yield Increase", res.get("yield_forecast", "N/A"))
+                    st.warning(f"**⚡ {t('Weather Impact')}:** {t(res.get('weather_impact'))}")
+                    st.metric(t("Estimated Yield Increase"), t(res.get("yield_forecast", "N/A")))
 
                 st.markdown("---")
 
@@ -852,19 +930,19 @@ def home_page(lang_text):
         
         if res.get("crop_name") == "Tomato":
             st.markdown("---")
-            st.markdown("## 🍅 Detailed Tomato Intelligence Report")
+            st.markdown("## 🍅 " + t("Detailed Tomato Intelligence Report"))
             
-            st.markdown(f"### 🛑 Diagnosis: {res.get('disease_name', 'Healthy')}")
-            st.write(res.get("diagnosis_details", "No details available."))
+            st.markdown(f"### 🛑 {t('Diagnosis')}: {t(res.get('disease_name', 'Healthy'))}")
+            st.write(t(res.get("diagnosis_details", "No details available.")))
 
-            st.markdown("### 📅 Treatment & Care Roadmap")
+            st.markdown("### 📅 " + t("Treatment & Care Roadmap"))
             # Visual Grid for Roadmap
-            st.info(f"**🟢 NEXT 7 DAYS**\n\n{res.get('plan_7_days', 'N/A')}")
-            st.warning(f"**🟡 NEXT 1 MONTH**\n\n{res.get('plan_1_month', 'N/A')}")
-            st.error(f"**🔴 NEXT 3 MONTHS**\n\n{res.get('plan_3_months', 'N/A')}")
+            st.info(f"**🟢 {t('NEXT 7 DAYS')}**\n\n{t(res.get('plan_7_days', 'N/A'))}")
+            st.warning(f"**🟡 {t('NEXT 1 MONTH')}**\n\n{t(res.get('plan_1_month', 'N/A'))}")
+            st.error(f"**🔴 {t('NEXT 3 MONTHS')}**\n\n{t(res.get('plan_3_months', 'N/A'))}")
 
             st.markdown("---")
-            st.markdown("### 🧪 Recommended Fertilizers & Solutions")
+            st.markdown("### 🧪 " + t("Recommended Fertilizers & Solutions"))
             ferts = res.get("fertilizers", [])
             search_terms = []
             if ferts:
@@ -872,37 +950,38 @@ def home_page(lang_text):
                 for f in ferts:
                     st.markdown(f"""
                     <div class="fert-card">
-                        <div class="fert-title">🔬 {f.get('name')}</div>
-                        <div class="fert-reason"><b>Usage:</b> {f.get('reason')}</div>
-                        <div class="fert-cost">💰 Estimated Cost: {f.get('cost')}</div>
+                        <div class="fert-title">🔬 {t(f.get('name'))}</div>
+                        <div class="fert-reason"><b>{t('Usage')}:</b> {t(f.get('reason'))}</div>
+                        <div class="fert-cost">💰 {t('Estimated Cost')}: {t(f.get('cost'))}</div>
                     </div>
                     """, unsafe_allow_html=True)
                     search_terms.append(f"{f.get('name')} price")
                 
                 st.write("") # Spacer
-                if st.button("🛒 Shop Recommended Fertilizers Online"):
+                if st.button("🛒 " + t("Shop Recommended Fertilizers Online")):
                     st.session_state.pending_shop_query = " + ".join(search_terms)
-                    st.session_state.menu_choice = lang_text["shops"]
+                    st.session_state.menu_choice = "Shop"
                     st.rerun()
             else:
-                st.write("No specific fertilizers recommended.")
+                st.write(t("No specific fertilizers recommended."))
 
             st.markdown("---")
-            st.markdown("### 📊 Background Intelligence Reports")
+            st.markdown("### 📊 " + t("Background Intelligence Reports"))
             
             def render_report_expander(icon, title, data_key):
-                with st.expander(f"{icon} {title}"):
+                with st.expander(f"{icon} {t(title)}"):
                     report = st.session_state.get(data_key)
                     if report and isinstance(report, dict):
-                        st.markdown(f"#### Overview")
-                        st.write(report.get("summary", "No summary provided."))
+                        st.markdown(f"#### {t('Overview')}")
+                        st.write(t(report.get("summary", "No summary provided.")))
                         
                         table_data = report.get("table_data")
                         if table_data:
-                            st.markdown("#### Structured Data")
+                            st.markdown(f"#### {t('Structured Data')}")
+                            # Translate keys and values in table_data if needed, but table_data usually contains metric names
                             st.table(table_data)
                     else:
-                        st.write(f"No {title.lower()} data available.")
+                        st.write(t(f"No {title.lower()} data available."))
 
             render_report_expander("☁️", "Weather Trends (3y)", "last_weather")
             render_report_expander("💧", "Climate & Water Status", "last_climate")
@@ -913,11 +992,11 @@ def home_page(lang_text):
 
             st.markdown("---")
         else:
-            st.error("🚫 Operation Interrupted: The system identified this image as a non-tomato plant. Diagnosis and treatment are restricted to tomatoes.")
+            st.error("🚫 " + t("Operation Interrupted: The system identified this image as a non-tomato plant. Diagnosis and treatment are restricted to tomatoes."))
 
 
 def chat_page():
-    st.title("💬 Agent Chat")
+    st.title("💬 " + t("Agent Chat"))
     
     # Chat container for scrollable messages
     chat_container = st.container()
@@ -926,14 +1005,14 @@ def chat_page():
         for msg in st.session_state.chat_history:
             with st.chat_message(msg['role']):
                 st.markdown(f"*{msg['time']}*")
-                st.write(msg['text'])
+                st.write(t(msg['text']))
 
-    query = st.chat_input("Ask about farming, costs, irrigation, market, disease...")
+    query = st.chat_input(t("Ask about farming, costs, irrigation, market, disease..."))
     if query:
         st.session_state.chat_history.append(
             {"time": datetime.now().strftime("%H:%M:%S"), "role": "user", "text": query}
         )
-        with st.spinner("Agent is thinking..."):
+        with st.spinner(t("Agent is thinking...")):
             answer = call_openrouter(
                 [
                     {"role": "system", "content": "You are a practical agricultural AI agent."},
@@ -946,8 +1025,8 @@ def chat_page():
         st.rerun()
 
 
-def shop_or_doctors_page(title, actor, lang_text):
-    st.title(title)
+def shop_or_doctors_page(title, actor):
+    st.title(t(title))
     
     # Check for redirected query
     initial_crop = ""
@@ -956,30 +1035,30 @@ def shop_or_doctors_page(title, actor, lang_text):
     if actor == "Shop" and st.session_state.pending_shop_query:
         initial_req = st.session_state.pending_shop_query
         st.session_state.pending_shop_query = None # Clear after use
-        st.info(f"Searching for recommended products: {initial_req}")
+        st.info(t("Searching for recommended products:") + f" {initial_req}")
 
     col_in1, col_in2 = st.columns(2)
     with col_in1:
         # Integrated context: Only show requirement for both Shop and Doctors
-        st.write(f"📍 Location: **{st.session_state.location or 'Auto-fetching...'}**")
+        st.write(f"📍 {t('Location')}: **{st.session_state.location or t('Auto-fetching...')}**")
         if st.session_state.get("detected_disease"):
-            st.write(f"🛑 Detected Issue: **{st.session_state.detected_disease}**")
+            st.write(f"🛑 {t('Detected Issue')}: **{t(st.session_state.detected_disease)}**")
         
         crop = "Tomato" # Simplified for both
     with col_in2:
-        requirement = st.text_input(f"{actor}: Search Query", value=initial_req)
+        requirement = st.text_input(f"{t(actor)}: {t('Search Query')}", value=initial_req)
 
     # Automatic trigger if redirected
     if initial_req and not st.session_state.get(f"searched_{actor}"):
         st.session_state[f"searched_{actor}"] = True
         run_search = True
     else:
-        run_search = st.button(f"Search {actor}")
+        run_search = st.button(f"{t('Search')} {t(actor)}")
 
     col1, col2 = st.columns(2)
     with col1:
         if run_search:
-            with st.spinner(f"Finding the best {actor.lower()}s for you..."):
+            with st.spinner(f"{t('Finding the best')} {t(actor).lower()}s {t('for you')}..."):
                 location = st.session_state.location or 'unknown location'
                 disease_context = f" for treatment of {st.session_state.get('detected_disease')}" if st.session_state.get('detected_disease') else ""
                 
@@ -991,26 +1070,26 @@ def shop_or_doctors_page(title, actor, lang_text):
                 # Use GPT for high-accuracy shop/doctor searches
                 response = call_openrouter([{"role": "user", "content": search_prompt}], model="openai/gpt-4o-mini")
                 if "error" not in response.lower() or "401" not in response:
-                    st.success(f"Found {actor}s!")
-                    st.markdown(response)
+                    st.success(f"{t('Found')} {t(actor)}s!")
+                    st.markdown(t(response))
                 else:
-                    st.error(f"Search failed: {response}")
+                    st.error(f"{t('Search failed')}: {t(response)}")
 
     with col2:
-        if st.button("Show all nearby"):
-            with st.spinner(f"Listing all major {actor.lower()} options..."):
+        if st.button(t("Show all nearby")):
+            with st.spinner(f"{t('Listing all major')} {t(actor).lower()} {t('options')}..."):
                 search_prompt = f"List all major {actor.lower()} options for {crop} farming. Include pricing estimates and usage summary."
                 response = call_openrouter([{"role": "user", "content": search_prompt}])
-                st.markdown(response)
+                st.markdown(t(response))
 
 
 def contact_page():
-    st.title("📞 Contact")
+    st.title("📞 " + t("Contact"))
     st.markdown(
-        """
-        **AI Farm Agent Team**  
-        Email: support@aifarmagent.local  
-        Services: Vision, Climate, Soil, Water, Market, Execution  
+        f"""
+        **{t('AI Farm Agent Team')}**  
+        {t('Email')}: support@aifarmagent.local  
+        {t('Services')}: {t('Vision, Climate, Soil, Water, Market, Execution')}  
         """
     )
 
@@ -1020,19 +1099,23 @@ def main():
     ensure_session_defaults()
     apply_local_font(st.session_state.language)
 
-    lang_text = TRANSLATIONS[st.session_state.language]
-    
     # NAVIGATION AT ABSOLUTE TOP
     cols = st.columns(5)
-    menu_items = [lang_text["home"], lang_text["chat"], lang_text["shops"], lang_text["doctors"], lang_text["contact"]]
+    menu_items = [
+        {"id": "Home", "label": t("Home")},
+        {"id": "Chat", "label": t("Chat")},
+        {"id": "Shop", "label": t("Shop")},
+        {"id": "Doctors", "label": t("Doctors")},
+        {"id": "Contact", "label": t("Contact")}
+    ]
     
     for i, item in enumerate(menu_items):
-        if cols[i].button(item, use_container_width=True, type="primary" if st.session_state.menu_choice == item else "secondary"):
-            st.session_state.menu_choice = item
+        if cols[i].button(item["label"], use_container_width=True, type="primary" if st.session_state.menu_choice == item["id"] else "secondary"):
+            st.session_state.menu_choice = item["id"]
             st.rerun()
 
     st.markdown('<div id="main-content">', unsafe_allow_html=True)
-    sidebar_controls(lang_text)
+    sidebar_controls()
     
     # Mode switch reset logic
     if "prev_mode" not in st.session_state:
@@ -1048,14 +1131,14 @@ def main():
 
     menu = st.session_state.menu_choice
 
-    if menu == lang_text["home"]:
-        home_page(lang_text)
-    elif menu == lang_text["chat"]:
+    if menu == "Home":
+        home_page()
+    elif menu == "Chat":
         chat_page()
-    elif menu == lang_text["shops"]:
-        shop_or_doctors_page("🛒 Fertilizer Shop", "Shop", lang_text)
-    elif menu == lang_text["doctors"]:
-        shop_or_doctors_page("🩺 Doctors", "Doctors", lang_text)
+    elif menu == "Shop":
+        shop_or_doctors_page("🛒 Fertilizer Shop", "Shop")
+    elif menu == "Doctors":
+        shop_or_doctors_page("🩺 Doctors", "Doctors")
     else:
         contact_page()
     st.markdown('</div>', unsafe_allow_html=True)
