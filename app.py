@@ -677,7 +677,7 @@ def home_page(lang_text):
     if st.session_state.analysis_mode == "Disease Detection":
         st.markdown("### 📸 Disease Diagnosis")
         uploaded_image = st.file_uploader(lang_text["upload"], type=["jpg", "jpeg", "png"], label_visibility="collapsed")
-
+        final result = None
         if uploaded_image:
             image = Image.open(uploaded_image)
             st.image(image, caption="Uploaded Leaf", use_container_width=True)
