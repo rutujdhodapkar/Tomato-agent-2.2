@@ -6,3 +6,4 @@ requests
 geocoder
 python-dateutil
 streamlit_js_eval
+sarvamai
