@@ -1087,8 +1087,10 @@ def contact_page():
     st.title("📞 " + t("Contact"))
     st.markdown(
         f"""
-        **{t('AI Farm Agent Team')}**  
-        {t('Email')}: support@aifarmagent.local  
+        **{t('Om Hire')}**  
+        {t('Email')}:  hireom07@gmail.com
+        {t('Mentor')}:  Dr.S.S Chaudhari
+        
         {t('Services')}: {t('Vision, Climate, Soil, Water, Market, Execution')}  
         """
     )
