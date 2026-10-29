@@ -13,19 +13,20 @@ from streamlit_js_eval import streamlit_js_eval
 from sarvamai import SarvamAI
 
 # ================= CONFIG ================= #
-# API keys intentionally kept in-code per requirement.
-SARVAM_API_KEY = "sk_1x6902nv_YD6iYU66jylp0rxDeynkuu6o"
-sarvam_client = SarvamAI(api_subscription_key=SARVAM_API_KEY)
-OPENROUTER_API_KEY = "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"
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-MODEL_NAME = "nvidia/nemotron-nano-12b-v2-vl:free"
-VISION_MODEL = "nvidia/nemotron-nano-12b-v2-vl:free"
-REASONING_MODEL = "openai/gpt-oss-120b:free"
-FALLBACK_MODELS = [
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "google/gemini-2.0-flash-exp:free",
-    "google/gemini-flash-1.5-8b:free"
-]
+def get_secret(name):
+    """Read a deployment secret from Streamlit Cloud or the process environment."""
+    try:
+        value = st.secrets.get(name, "")
+    except Exception:
+        value = ""
+    return str(value or os.getenv(name, "")).strip()
+
+
+NVIDIA_API_KEY = get_secret("NVIDIA_API_KEY")
+SARVAM_API_KEY = get_secret("SARVAM_API_KEY")
+NVIDIA_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
+MODEL_NAME = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
+sarvam_client = SarvamAI(api_subscription_key=SARVAM_API_KEY) if SARVAM_API_KEY else None
 FARM_CONTEXT_FILE = "farm_context.json"
 USER_DB = "users.json"
 EXPORT_DIR = "exports"
@@ -92,6 +93,9 @@ def t(text):
         return cache[cache_key]
         
     try:
+        if sarvam_client is None:
+            return text
+
         response = sarvam_client.text.translate(
             input=text,
             source_language_code="en-IN",
@@ -111,9 +115,7 @@ def t(text):
         save_translation_cache(cache)
         return translated_text
     except Exception as e:
-        error_msg = f"Sarvam AI Translation Error: {e}"
-        print(error_msg)
-        st.session_state["last_translation_error"] = error_msg
+        st.session_state["last_translation_error"] = "Sarvam translation is temporarily unavailable."
         return text
 
 # Font fallback for regional scripts
@@ -183,65 +185,54 @@ def get_svg_base64(svg_str):
     return base64.b64encode(svg_str.encode()).decode()
 
 
-def call_openrouter(messages, model=REASONING_MODEL):
-    """Calls OpenRouter with a fallback mechanism."""
-    models_to_try = [model] + [m for m in FALLBACK_MODELS if m != model]
-    
+def call_nvidia(messages, *, max_tokens=2048, temperature=0.2):
+    """Call NVIDIA NIM's OpenAI-compatible endpoint without exposing secrets."""
+    if not NVIDIA_API_KEY:
+        return "Configuration error: NVIDIA_API_KEY is not set in Streamlit secrets."
+
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Authorization": f"Bearer {NVIDIA_API_KEY}",
         "Content-Type": "application/json",
     }
+    payload = {
+        "model": MODEL_NAME,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
 
-    last_error = ""
-    retry_delay = 2 # Start with 2s delay for 429s
-
-    for i, current_model in enumerate(models_to_try):
-        payload = {"model": current_model, "messages": messages}
+    last_error = "NVIDIA API request failed."
+    for attempt in range(3):
         try:
-            response = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=60)
-            
-            # If 429 (Rate Limit), wait and try next or retry
-            if response.status_code == 429:
-                last_error = f"Model {current_model} rate limited (429). Waiting {retry_delay}s..."
-                time.sleep(retry_delay)
-                retry_delay *= 2 # Exponential backoff
-                continue
+            response = requests.post(NVIDIA_API_URL, headers=headers, json=payload, timeout=90)
+            if response.status_code == 429 or response.status_code >= 500:
+                retry_after = response.headers.get("Retry-After")
+                delay = min(float(retry_after), 20) if retry_after and retry_after.isdigit() else 2 ** attempt
+                last_error = "NVIDIA API is busy; please try again in a moment."
+                if attempt < 2:
+                    time.sleep(delay)
+                    continue
+                return last_error
 
-            # If 404, try next model
+            if response.status_code in (401, 403):
+                return "NVIDIA API authentication failed. Check NVIDIA_API_KEY in Streamlit secrets."
             if response.status_code == 404:
-                last_error = f"Model {current_model} failed with 404. Trying fallback..."
-                continue
-                
+                return f"NVIDIA model or endpoint was not found. Verify model {MODEL_NAME}."
             if response.status_code != 200:
-                last_error = f"HTTP Error {response.status_code}: {response.text}"
-                continue
-
-            if "application/json" not in response.headers.get("Content-Type", ""):
-                last_error = f"API returned non-JSON response from {current_model}"
-                continue
+                return f"NVIDIA API returned HTTP {response.status_code}."
 
             data = response.json()
-            if "choices" in data:
-                content = data["choices"][0]["message"]["content"]
-                
-                # Check for textual refusals inside a successful 200 response
-                refusal_keywords = ["i am sorry", "i'm sorry", "i cannot provide", "i can't provide", "i am an ai", "as an ai model"]
-                if any(kw in content.lower() for kw in refusal_keywords):
-                    last_error = f"Model {current_model} refused: {content[:100]}..."
-                    continue
-                
-                return content
-
-            if "error" in data:
-                last_error = f"API Error ({current_model}): {data['error'].get('message')}"
-                continue
-                
-            last_error = f"Unexpected format from {current_model}: {data}"
-        except requests.exceptions.RequestException as e:
-            last_error = f"Network Error ({current_model}): {str(e)}"
-            continue
-
-    return last_error or "All models failed."
+            content = data.get("choices", [{}])[0].get("message", {}).get("content")
+            if isinstance(content, str) and content.strip():
+                return content.strip()
+            return "NVIDIA API returned an empty response."
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+            last_error = "Could not reach NVIDIA API. Check the deployment network and try again."
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+        except (requests.exceptions.RequestException, ValueError, TypeError):
+            return "NVIDIA API returned an invalid response."
+    return last_error
 
 
 def save_farm_context(data):
@@ -265,10 +256,9 @@ def load_farm_context():
 
 def _fetch_submodel_data(prompt, label, location):
     """Generic submodel fetcher with robust JSON extraction."""
-    response = call_openrouter([{"role": "user", "content": prompt}])
+    response = call_nvidia([{"role": "user", "content": prompt}], max_tokens=3000)
     
-    # 🔥 Check if response is an error message from call_openrouter
-    if any(err_sig in response for err_sig in ["HTTP Error", "API Error", "Network Error", "Unexpected format", "refused"]):
+    if response.startswith(("Configuration error:", "NVIDIA API ", "Could not reach")):
         return None, response
 
     try:
@@ -430,14 +420,7 @@ def run_reasoning_model(image_bytes, location, weather=None, climate=None, soil=
     }}
     """
 
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json"
-    }
-
-    payload = {
-        "model": MODEL_NAME,
-        "messages": [
+    response = call_nvidia([
             {
                 "role": "user",
                 "content": [
@@ -450,29 +433,13 @@ def run_reasoning_model(image_bytes, location, weather=None, climate=None, soil=
                     }
                 ]
             }
-        ]
-    }
+        ], max_tokens=2500)
 
-    response = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=60)
-    
-
-
-    if "application/json" not in response.headers.get("Content-Type", ""):
-        return {"error": "API returned non-JSON response", "raw": response.text[:500]}
+    if response.startswith(("Configuration error:", "NVIDIA API ", "Could not reach")):
+        return {"error": response}
 
     try:
-        result = response.json()
-    except requests.exceptions.JSONDecodeError:
-         return {"error": "Failed to decode JSON", "raw": response.text[:500]}
-
-    if "choices" not in result:
-        err_msg = "Unknown error"
-        if "error" in result:
-            err_msg = result["error"].get("message", "Unknown error")
-        return {"error": f"API Error: {err_msg}", "raw_response": result}
-
-    try:
-        output_text = result["choices"][0]["message"]["content"].strip()
+        output_text = response.strip()
         
         # 1. Try markdown extraction
         if "```json" in output_text:
@@ -487,8 +454,8 @@ def run_reasoning_model(image_bytes, location, weather=None, climate=None, soil=
                 output_text = match.group(0)
 
         return json.loads(output_text)
-    except Exception as e:
-        return {"error": f"Reasoning model failed to parse output: {str(e)}", "raw_content": output_text if 'output_text' in locals() else str(result)}
+    except (json.JSONDecodeError, TypeError, AttributeError) as e:
+        return {"error": f"Reasoning model returned invalid JSON: {e}"}
 
 
 def run_soil_intelligence_model(location, weather=None, soil=None):
@@ -521,21 +488,12 @@ def run_soil_intelligence_model(location, weather=None, soil=None):
     }}
     """
 
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json"
-    }
-
-    payload = {
-        "model": REASONING_MODEL,
-        "messages": [
-            {"role": "user", "content": prompt}
-        ]
-    }
+    response = call_nvidia([{"role": "user", "content": prompt}], max_tokens=2200)
+    if response.startswith(("Configuration error:", "NVIDIA API ", "Could not reach")):
+        return {"error": response}
 
     try:
-        response = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=60)
-        output_text = response.json()["choices"][0]["message"]["content"].strip()
+        output_text = response.strip()
         
         # Robust extraction
         if "```json" in output_text:
@@ -547,8 +505,8 @@ def run_soil_intelligence_model(location, weather=None, soil=None):
             if match: output_text = match.group(0)
 
         return json.loads(output_text)
-    except Exception as e:
-        return {"error": f"Soil Intelligence model failed: {str(e)}", "raw": output_text if 'output_text' in locals() else "Unknown"}
+    except (json.JSONDecodeError, TypeError, AttributeError) as e:
+        return {"error": f"Soil Intelligence model returned invalid JSON: {e}"}
 
 
 def ensure_session_defaults():
@@ -670,7 +628,7 @@ def sidebar_controls():
         st.title("🤖 " + t("Agent Control Panel"))
 
         # Residue Advisor Link
-        st.link_button(t("Residue Advisor"), "https://agriintellect.streamlit.app/", use_container_width=True)
+        st.link_button(t("Residue Advisor"), "https://agriintellect.streamlit.app/", width="stretch")
         st.markdown("---")
 
         # 1. Mode Selection
@@ -758,7 +716,7 @@ def home_page():
         final_result = None
         if uploaded_image:
             image = Image.open(uploaded_image)
-            st.image(image, caption=t("Uploaded Leaf"), use_container_width=True)
+            st.image(image, caption=t("Uploaded Leaf"), width="stretch")
             
             if st.button(t("Analyze")):
                 buffer = io.BytesIO()
@@ -1013,7 +971,7 @@ def chat_page():
             {"time": datetime.now().strftime("%H:%M:%S"), "role": "user", "text": query}
         )
         with st.spinner(t("Agent is thinking...")):
-            answer = call_openrouter(
+            answer = call_nvidia(
                 [
                     {"role": "system", "content": "You are a practical agricultural AI agent."},
                     {"role": "user", "content": query},
@@ -1068,8 +1026,8 @@ def shop_or_doctors_page(title, actor):
                     search_prompt = f"As an agricultural AI, find/recommend 5 plant doctors or experts for {crop}{disease_context} with requirement: {requirement} near {location}. Provide name, contact detail (simulated), and specialized service. Format as a clean list."
                 
                 # Use GPT for high-accuracy shop/doctor searches
-                response = call_openrouter([{"role": "user", "content": search_prompt}], model="openai/gpt-4o-mini")
-                if "error" not in response.lower() or "401" not in response:
+                response = call_nvidia([{"role": "user", "content": search_prompt}], max_tokens=1800)
+                if not response.startswith(("Configuration error:", "NVIDIA API ", "Could not reach")):
                     st.success(f"{t('Found')} {t(actor)}s!")
                     st.markdown(t(response))
                 else:
@@ -1079,7 +1037,7 @@ def shop_or_doctors_page(title, actor):
         if st.button(t("Show all nearby")):
             with st.spinner(f"{t('Listing all major')} {t(actor).lower()} {t('options')}..."):
                 search_prompt = f"List all major {actor.lower()} options for {crop} farming. Include pricing estimates and usage summary."
-                response = call_openrouter([{"role": "user", "content": search_prompt}])
+                response = call_nvidia([{"role": "user", "content": search_prompt}], max_tokens=1800)
                 st.markdown(t(response))
 
 
@@ -1112,7 +1070,7 @@ def main():
     ]
     
     for i, item in enumerate(menu_items):
-        if cols[i].button(item["label"], use_container_width=True, type="primary" if st.session_state.menu_choice == item["id"] else "secondary"):
+        if cols[i].button(item["label"], width="stretch", type="primary" if st.session_state.menu_choice == item["id"] else "secondary"):
             st.session_state.menu_choice = item["id"]
             st.rerun()
 
