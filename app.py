@@ -413,6 +413,9 @@ def run_reasoning_model(image_bytes, location, weather=None, climate=None, soil=
     1. Verify if the plant is a Tomato. If it is NOT a tomato, set 'crop_name' to 'Not Tomato'.
     2. If it is a Tomato, provide:
        - Precise Disease Diagnosis.
+       - Visible symptoms and confidence level.
+       - Likely cause, transmission/spread, and differential warning.
+       - Immediate actions, treatment details, precautions, and prevention.
        - Short-term action (Next 7 Days).
        - Mid-term plan (Next 1 Month).
        - Long-term strategy (Next 3 Months).
@@ -423,6 +426,15 @@ def run_reasoning_model(image_bytes, location, weather=None, climate=None, soil=
         "crop_name": "Tomato" or "Not Tomato",
         "disease_name": "...",
         "diagnosis_details": "...",
+        "symptoms_observed": ["..."],
+        "confidence": "Low/Medium/High",
+        "likely_cause": "...",
+        "transmission_or_spread": "...",
+        "differential_warning": "...",
+        "immediate_actions": ["..."],
+        "treatment_details": "...",
+        "precautions": ["..."],
+        "prevention": ["..."],
         "plan_7_days": "...",
         "plan_1_month": "...",
         "plan_3_months": "...",
@@ -885,11 +897,56 @@ def home_page():
             st.markdown(f"### 🛑 {t('Diagnosis')}: {t(res.get('disease_name', 'Healthy'))}")
             st.write(t(res.get("diagnosis_details", "No details available.")))
 
+            confidence = res.get("confidence")
+            if confidence:
+                st.metric(t("Diagnostic Confidence"), t(str(confidence)))
+
+            detail_columns = st.columns(2)
+            with detail_columns[0]:
+                st.markdown("#### 🔎 " + t("Symptoms Observed"))
+                symptoms = res.get("symptoms_observed", [])
+                if isinstance(symptoms, str):
+                    symptoms = [symptoms]
+                for symptom in symptoms:
+                    st.write("• " + t(str(symptom)))
+                st.markdown("#### 🧬 " + t("Likely Cause & Spread"))
+                st.write(t(str(res.get("likely_cause", "Not specified."))))
+                st.write(t(str(res.get("transmission_or_spread", "Not specified."))))
+
+            with detail_columns[1]:
+                st.markdown("#### ⚡ " + t("Immediate Actions"))
+                actions = res.get("immediate_actions", [])
+                if isinstance(actions, str):
+                    actions = [actions]
+                for action in actions:
+                    st.write("• " + t(str(action)))
+                st.markdown("#### ⚠️ " + t("Differential Warning"))
+                st.write(t(str(res.get("differential_warning", "Confirm with a local agricultural expert if symptoms spread."))))
+
+            st.markdown("### 🧴 " + t("Treatment Details"))
+            st.write(t(str(res.get("treatment_details", "Follow the roadmap below and use only locally approved products."))))
+
             st.markdown("### 📅 " + t("Treatment & Care Roadmap"))
             # Visual Grid for Roadmap
             st.info(f"**🟢 {t('NEXT 7 DAYS')}**\n\n{t(res.get('plan_7_days', 'N/A'))}")
             st.warning(f"**🟡 {t('NEXT 1 MONTH')}**\n\n{t(res.get('plan_1_month', 'N/A'))}")
             st.error(f"**🔴 {t('NEXT 3 MONTHS')}**\n\n{t(res.get('plan_3_months', 'N/A'))}")
+
+            care_columns = st.columns(2)
+            with care_columns[0]:
+                st.markdown("#### 🛡️ " + t("Precautions"))
+                precautions = res.get("precautions", [])
+                if isinstance(precautions, str):
+                    precautions = [precautions]
+                for precaution in precautions:
+                    st.write("• " + t(str(precaution)))
+            with care_columns[1]:
+                st.markdown("#### 🌱 " + t("Prevention"))
+                prevention = res.get("prevention", [])
+                if isinstance(prevention, str):
+                    prevention = [prevention]
+                for item in prevention:
+                    st.write("• " + t(str(item)))
 
             st.markdown("---")
             st.markdown("### 🧪 " + t("Recommended Fertilizers & Solutions"))
@@ -914,31 +971,6 @@ def home_page():
                     st.rerun()
             else:
                 st.write(t("No specific fertilizers recommended."))
-
-            st.markdown("---")
-            st.markdown("### 📊 " + t("Background Intelligence Reports"))
-            
-            def render_report_expander(icon, title, data_key):
-                with st.expander(f"{icon} {t(title)}"):
-                    report = st.session_state.get(data_key)
-                    if report and isinstance(report, dict):
-                        st.markdown(f"#### {t('Overview')}")
-                        st.write(t(report.get("summary", "No summary provided.")))
-                        
-                        table_data = report.get("table_data")
-                        if table_data:
-                            st.markdown(f"#### {t('Structured Data')}")
-                            # Translate keys and values in table_data if needed, but table_data usually contains metric names
-                            st.table(table_data)
-                    else:
-                        st.write(t(f"No {title.lower()} data available."))
-
-            render_report_expander("☁️", "Weather Trends (3y)", "last_weather")
-            render_report_expander("💧", "Climate & Water Status", "last_climate")
-            render_report_expander("🌱", "Local Soil Health", "last_soil")
-            render_report_expander("🚿", "Irrigation & Schedules", "last_irrigation")
-            render_report_expander("📈", "Market & Economics", "last_market")
-            render_report_expander("🪲", "Pest & Biosecurity Risk", "last_pest_risk")
 
             st.markdown("---")
         else:
