@@ -33,6 +33,18 @@ EXPORT_DIR = "exports"
 REPORTS_DIR = "reports"
 os.makedirs(REPORTS_DIR, exist_ok=True)
 
+
+def default_farm_reports():
+    """Fast local context used for diagnosis; no weather or external report calls."""
+    return {
+        "weather": {"summary": "Default context: live weather data was not requested.", "table_data": []},
+        "climate": {"summary": "Default context: live climate data was not requested.", "table_data": []},
+        "soil": {"summary": "Default context: use image diagnosis and manual soil inputs only.", "table_data": []},
+        "irrigation": {"summary": "Default irrigation guidance will be based on the diagnosis.", "table_data": []},
+        "market": {"summary": "Default context: live market data was not requested.", "table_data": []},
+        "pest_risk": {"summary": "Default context: pest guidance will be based on the diagnosed disease.", "table_data": []},
+    }
+
 # ================= LANGUAGE / FONT ================= #
 SARVAM_LANG_MAP = {
     "English": "en-IN",
@@ -185,7 +197,7 @@ def get_svg_base64(svg_str):
     return base64.b64encode(svg_str.encode()).decode()
 
 
-def call_nvidia(messages, *, max_tokens=2048, temperature=0.2):
+def call_nvidia(messages, *, max_tokens=2048, temperature=0.2, retries=2):
     """Call NVIDIA NIM's OpenAI-compatible endpoint without exposing secrets."""
     if not NVIDIA_API_KEY:
         return "Configuration error: NVIDIA_API_KEY is not set in Streamlit secrets."
@@ -204,12 +216,12 @@ def call_nvidia(messages, *, max_tokens=2048, temperature=0.2):
     last_error = "NVIDIA API request failed."
     for attempt in range(3):
         try:
-            response = requests.post(NVIDIA_API_URL, headers=headers, json=payload, timeout=90)
+            response = requests.post(NVIDIA_API_URL, headers=headers, json=payload, timeout=45)
             if response.status_code == 429 or response.status_code >= 500:
                 retry_after = response.headers.get("Retry-After")
                 delay = min(float(retry_after), 20) if retry_after and retry_after.isdigit() else 2 ** attempt
                 last_error = "NVIDIA API is busy; please try again in a moment."
-                if attempt < 2:
+                if attempt < retries:
                     time.sleep(delay)
                     continue
                 return last_error
@@ -228,7 +240,7 @@ def call_nvidia(messages, *, max_tokens=2048, temperature=0.2):
             return "NVIDIA API returned an empty response."
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
             last_error = "Could not reach NVIDIA API. Check the deployment network and try again."
-            if attempt < 2:
+            if attempt < retries:
                 time.sleep(2 ** attempt)
         except (requests.exceptions.RequestException, ValueError, TypeError):
             return "NVIDIA API returned an invalid response."
@@ -433,7 +445,7 @@ def run_reasoning_model(image_bytes, location, weather=None, climate=None, soil=
                     }
                 ]
             }
-        ], max_tokens=2500)
+        ], max_tokens=2500, retries=1)
 
     if response.startswith(("Configuration error:", "NVIDIA API ", "Could not reach")):
         return {"error": response}
@@ -725,13 +737,10 @@ def home_page():
                 
                 status_container = st.empty()
                 with status_container.container():
-                    st.markdown("### 🔁 " + t("Running full farm intelligence pipeline..."))
-                    
-                    # Use the Orchestrator (Main Model) for sub-models
-                    reports = agricultural_intelligence_orchestrator(
-                        st.session_state.location, 
-                        lambda msg: st.write(msg)
-                    )
+                    st.markdown("### 🔁 " + t("Running fast disease diagnosis..."))
+
+                    # Keep diagnosis fast: use local defaults instead of fetching reports.
+                    reports = default_farm_reports()
                     
                     st.session_state.last_weather = reports["weather"]
                     st.session_state.last_climate = reports["climate"]
@@ -740,44 +749,27 @@ def home_page():
                     st.session_state.last_market = reports["market"]
                     st.session_state.last_pest_risk = reports["pest_risk"]
                     
-                    st.write("• " + t(f"Analyzing image & synthesizing all reports…"))
-                    
-                    # RETRY LOOP for Tomato Detection
-                    final_result = None
-                    for attempt in range(3):
-                        if attempt > 0:
-                            st.write("• " + t(f"Retrying tomato verification (Attempt {attempt+1}/3)…"))
-                        
-                        result = run_reasoning_model(
-                            img_bytes, 
-                            st.session_state.location,
-                            weather=st.session_state.last_weather,
-                            climate=st.session_state.last_climate,
-                            soil=st.session_state.last_soil,
-                            irrigation=st.session_state.last_irrigation,
-                            market=st.session_state.last_market,
-                            pest_risk=st.session_state.last_pest_risk,
-                            retry_count=attempt
-                        )
-                    
-                        if "error" in result:
-                            final_result = result
-                            break
-                        
-                        if result.get("crop_name") == "Tomato":
-                            final_result = result
-                            # Save to context
-                            st.session_state.detected_disease = result.get("disease_name")
-                            st.session_state.detected_crop = "Tomato"
-                            save_farm_context({
-                                "location": st.session_state.location,
-                                "disease_name": st.session_state.detected_disease,
-                                "crop_name": st.session_state.detected_crop
-                            })
-                            break
-                        else:
-                            final_result = result # Keep the 'Not Tomato' result if last attempt
-                            time.sleep(1)
+                    st.write("• " + t("Analyzing image for disease and treatment..."))
+                    final_result = run_reasoning_model(
+                        img_bytes,
+                        st.session_state.location,
+                        weather=st.session_state.last_weather,
+                        climate=st.session_state.last_climate,
+                        soil=st.session_state.last_soil,
+                        irrigation=st.session_state.last_irrigation,
+                        market=st.session_state.last_market,
+                        pest_risk=st.session_state.last_pest_risk,
+                        retry_count=0,
+                    )
+
+                    if "error" not in final_result and final_result.get("crop_name") == "Tomato":
+                        st.session_state.detected_disease = final_result.get("disease_name")
+                        st.session_state.detected_crop = "Tomato"
+                        save_farm_context({
+                            "location": st.session_state.location,
+                            "disease_name": st.session_state.detected_disease,
+                            "crop_name": st.session_state.detected_crop
+                        })
                 
                 status_container.empty()
                 st.session_state.detection_result = final_result
@@ -829,10 +821,9 @@ def home_page():
         if st.button("🚀 " + t("Run Soil AI Analysis")):
             status_container = st.empty()
             with status_container.container():
-                # 1. Fetch data if missing
+                # Use local defaults; do not fetch weather or regional reports.
                 if not st.session_state.last_soil:
-                    st.write("• Fetching regional reports...")
-                    reports = agricultural_intelligence_orchestrator(st.session_state.location, lambda msg: st.write(msg))
+                    reports = default_farm_reports()
                     st.session_state.last_weather = reports["weather"]
                     st.session_state.last_climate = reports["climate"]
                     st.session_state.last_soil = reports["soil"]
