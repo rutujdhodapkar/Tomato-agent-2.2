@@ -26,6 +26,7 @@ NVIDIA_API_KEY = get_secret("NVIDIA_API_KEY")
 SARVAM_API_KEY = get_secret("SARVAM_API_KEY")
 NVIDIA_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 MODEL_NAME = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
+AI_UNAVAILABLE_MESSAGE = "This request could not be completed right now. Please try again."
 sarvam_client = SarvamAI(api_subscription_key=SARVAM_API_KEY) if SARVAM_API_KEY else None
 FARM_CONTEXT_FILE = "farm_context.json"
 USER_DB = "users.json"
@@ -200,7 +201,7 @@ def get_svg_base64(svg_str):
 def call_nvidia(messages, *, max_tokens=2048, temperature=0.2, retries=2):
     """Call NVIDIA NIM's OpenAI-compatible endpoint without exposing secrets."""
     if not NVIDIA_API_KEY:
-        return "Configuration error: NVIDIA_API_KEY is not set in Streamlit secrets."
+        return AI_UNAVAILABLE_MESSAGE
 
     headers = {
         "Authorization": f"Bearer {NVIDIA_API_KEY}",
@@ -213,37 +214,37 @@ def call_nvidia(messages, *, max_tokens=2048, temperature=0.2, retries=2):
         "temperature": temperature,
     }
 
-    last_error = "NVIDIA API request failed."
+    last_error = AI_UNAVAILABLE_MESSAGE
     for attempt in range(3):
         try:
             response = requests.post(NVIDIA_API_URL, headers=headers, json=payload, timeout=45)
             if response.status_code == 429 or response.status_code >= 500:
                 retry_after = response.headers.get("Retry-After")
                 delay = min(float(retry_after), 20) if retry_after and retry_after.isdigit() else 2 ** attempt
-                last_error = "NVIDIA API is busy; please try again in a moment."
+                last_error = AI_UNAVAILABLE_MESSAGE
                 if attempt < retries:
                     time.sleep(delay)
                     continue
                 return last_error
 
             if response.status_code in (401, 403):
-                return "NVIDIA API authentication failed. Check NVIDIA_API_KEY in Streamlit secrets."
+                return AI_UNAVAILABLE_MESSAGE
             if response.status_code == 404:
-                return f"NVIDIA model or endpoint was not found. Verify model {MODEL_NAME}."
+                return AI_UNAVAILABLE_MESSAGE
             if response.status_code != 200:
-                return f"NVIDIA API returned HTTP {response.status_code}."
+                return AI_UNAVAILABLE_MESSAGE
 
             data = response.json()
             content = data.get("choices", [{}])[0].get("message", {}).get("content")
             if isinstance(content, str) and content.strip():
                 return content.strip()
-            return "NVIDIA API returned an empty response."
+            return AI_UNAVAILABLE_MESSAGE
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
-            last_error = "Could not reach NVIDIA API. Check the deployment network and try again."
+            last_error = AI_UNAVAILABLE_MESSAGE
             if attempt < retries:
                 time.sleep(2 ** attempt)
         except (requests.exceptions.RequestException, ValueError, TypeError):
-            return "NVIDIA API returned an invalid response."
+            return AI_UNAVAILABLE_MESSAGE
     return last_error
 
 
@@ -270,7 +271,7 @@ def _fetch_submodel_data(prompt, label, location):
     """Generic submodel fetcher with robust JSON extraction."""
     response = call_nvidia([{"role": "user", "content": prompt}], max_tokens=3000)
     
-    if response.startswith(("Configuration error:", "NVIDIA API ", "Could not reach")):
+    if response == AI_UNAVAILABLE_MESSAGE:
         return None, response
 
     try:
@@ -297,7 +298,7 @@ def _fetch_submodel_data(prompt, label, location):
             
         return data, None
     except Exception as e:
-        return None, f"JSON Parse Error: {str(e)} | Raw: {response[:100]}..."
+        return None, AI_UNAVAILABLE_MESSAGE
 
 def agricultural_intelligence_orchestrator(location, status_callback):
     """
@@ -447,7 +448,7 @@ def run_reasoning_model(image_bytes, location, weather=None, climate=None, soil=
             }
         ], max_tokens=2500, retries=1)
 
-    if response.startswith(("Configuration error:", "NVIDIA API ", "Could not reach")):
+    if response == AI_UNAVAILABLE_MESSAGE:
         return {"error": response}
 
     try:
@@ -467,7 +468,7 @@ def run_reasoning_model(image_bytes, location, weather=None, climate=None, soil=
 
         return json.loads(output_text)
     except (json.JSONDecodeError, TypeError, AttributeError) as e:
-        return {"error": f"Reasoning model returned invalid JSON: {e}"}
+        return {"error": AI_UNAVAILABLE_MESSAGE}
 
 
 def run_soil_intelligence_model(location, weather=None, soil=None):
@@ -501,7 +502,7 @@ def run_soil_intelligence_model(location, weather=None, soil=None):
     """
 
     response = call_nvidia([{"role": "user", "content": prompt}], max_tokens=2200)
-    if response.startswith(("Configuration error:", "NVIDIA API ", "Could not reach")):
+    if response == AI_UNAVAILABLE_MESSAGE:
         return {"error": response}
 
     try:
@@ -518,7 +519,7 @@ def run_soil_intelligence_model(location, weather=None, soil=None):
 
         return json.loads(output_text)
     except (json.JSONDecodeError, TypeError, AttributeError) as e:
-        return {"error": f"Soil Intelligence model returned invalid JSON: {e}"}
+        return {"error": AI_UNAVAILABLE_MESSAGE}
 
 
 def ensure_session_defaults():
@@ -1018,7 +1019,7 @@ def shop_or_doctors_page(title, actor):
                 
                 # Use GPT for high-accuracy shop/doctor searches
                 response = call_nvidia([{"role": "user", "content": search_prompt}], max_tokens=1800)
-                if not response.startswith(("Configuration error:", "NVIDIA API ", "Could not reach")):
+                if response != AI_UNAVAILABLE_MESSAGE:
                     st.success(f"{t('Found')} {t(actor)}s!")
                     st.markdown(t(response))
                 else:
