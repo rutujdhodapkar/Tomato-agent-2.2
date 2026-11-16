@@ -1,25 +1,4 @@
 
-
-Pasted text(20261116-111251).txt
-Document
-fix spell mistakes only
-Fixed the spelling mistake only. No logic, code structure, identifiers, or functionality changed.
-
-Correction made:
-
-- Dialy Watering Schedule → Daily Watering Schedule
-
-Completed
-
-Download corrected Python file
-
-
-Pasted_text_spellchecked.txt
-Document
-
-
-
-
 import base64
 import io
 import json
@@ -716,7 +695,7 @@ def sidebar_controls():
 
 
 def home_page():
-    st.markdown("# 🌱 " + t("Welcome to Tomato Detection System!"))
+    st.markdown("# 🌱 " + t("Welcome to Tomato Leaf Disease Detection System!"))
     st.markdown("### " + t("Your ultimate companion for tomato planting, care, and disease management."))
     st.markdown(t("""
     **Use the Tomato System to:**
