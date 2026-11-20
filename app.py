@@ -1070,7 +1070,7 @@ def contact_page():
     st.title("📞 " + t("Contact"))
     st.markdown(
         f"""
-        **{t('Rutuj Dhodapkar')}**
+        **{t('Rutuj Dhodapkar')}**  
         **{t('Atharva Nikam')}**  
         **{t('Yash Shelar')}**  
         **{t('Nakul Jadhav')}**  
