@@ -1070,9 +1070,12 @@ def contact_page():
     st.title("📞 " + t("Contact"))
     st.markdown(
         f"""
-        **{t('Om Hire')}**  
-        {t('Email')}:  hireom07@gmail.com
-        {t('Mentor')}:  Dr.S.S Chaudhari
+        **{t('Rutuj Dhodapkar')}**
+        **{t('Atharva Nikam')}**  
+        **{t('Yash Shelar')}**  
+        **{t('Nakul Jadhav')}**  
+        **{t('Souban Ansari')}**  
+       
         
         {t('Services')}: {t('Vision, Climate, Soil, Water, Market, Execution')}  
         """
